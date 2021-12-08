@@ -6,6 +6,14 @@
 #include "dgvector_manipulations.hpp"
 #include "stopwatch.hpp"
 #include "timemesh.hpp"
+#include <atomic>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
+#include <sstream>
+#include <thread>
+#include <vector>
 
 namespace Nextsim {
 
@@ -47,7 +55,7 @@ void cell_term(const Mesh& mesh,
     // - (Psi v, \nabla phi)
 
     // vx, vy dG(0) !!!
-    // \nabla phi = (0, 1, 1)
+    // nable phi = (0, 1, 1)
 
     // AV[0] * dx Phi(1) * VX[0]
     phiup(ic, 1) += inversemasscell(1) / mesh.hx * (phi(ic, 0) * vx(ic, 0) + 1. / 12. * phi(ic, 1) * vx(ic, 1) + 1. / 12. * phi(ic, 2) * vx(ic, 2));
@@ -501,6 +509,129 @@ void inversemassmatrix(const Mesh& mesh,
     inversemasscell(5) = timemesh.dt * 144.0;
 }
 
+template <int DGdegree>
+void ThreadCellTerms(size_t start, size_t end, const Mesh& mesh, CellVector<DGdegree>& phiup, const CellVector<DGdegree>& phi, const CellVector<DGdegree>& vx,
+    const CellVector<DGdegree>& vy, LocalCellVector<DGdegree>& inversemasscell);
+template <>
+void ThreadCellTerms(size_t start, size_t end, const Mesh& mesh, CellVector<0>& phiup, const CellVector<0>& phi, const CellVector<0>& vx,
+    const CellVector<0>& vy, LocalCellVector<0>& inversemasscell)
+{
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx;
+        for (size_t ix = 0; ix < mesh.nx; ++ix, ++ic)
+            cell_term<0>(mesh, inversemasscell, phiup, phi, vx, vy, ic);
+    }
+}
+template <>
+void ThreadCellTerms(size_t start, size_t end, const Mesh& mesh, CellVector<1>& phiup, const CellVector<1>& phi, const CellVector<1>& vx,
+    const CellVector<1>& vy, LocalCellVector<1>& inversemasscell)
+{
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx;
+        for (size_t ix = 0; ix < mesh.nx; ++ix, ++ic)
+            cell_term<1>(mesh, inversemasscell, phiup, phi, vx, vy, ic);
+    }
+}
+template <>
+void ThreadCellTerms(size_t start, size_t end, const Mesh& mesh, CellVector<2>& phiup, const CellVector<2>& phi, const CellVector<2>& vx,
+    const CellVector<2>& vy, LocalCellVector<2>& inversemasscell)
+{
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx;
+        for (size_t ix = 0; ix < mesh.nx; ++ix, ++ic)
+            cell_term<2>(mesh, inversemasscell, phiup, phi, vx, vy, ic);
+    }
+}
+
+template <int DGdegree>
+void ThreadEdge_term_Y(size_t start, size_t end, const Mesh& mesh, CellVector<DGdegree>& phiup, const CellVector<DGdegree>& phi,
+    const EdgeVector<DGdegree>& evx, LocalCellVector<DGdegree>& inversemasscell, const TimeMesh& timemesh);
+template <>
+void ThreadEdge_term_Y(size_t start, size_t end, const Mesh& mesh, CellVector<0>& phiup, const CellVector<0>& phi, const EdgeVector<0>& evx,
+    LocalCellVector<0>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx; // first index of left cell in row
+        size_t ie = iy * (mesh.nx + 1) + 1; // first index of inner velocity in row
+
+        for (size_t i = 0; i < mesh.nx - 1; ++i, ++ic, ++ie)
+            edge_term_Y<0>(
+                mesh, timemesh, phiup, phi, evx, ic, ic + 1, ie);
+    }
+}
+template <>
+void ThreadEdge_term_Y(size_t start, size_t end, const Mesh& mesh, CellVector<1>& phiup, const CellVector<1>& phi, const EdgeVector<1>& evx,
+    LocalCellVector<1>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx; // first index of left cell in row
+        size_t ie = iy * (mesh.nx + 1) + 1; // first index of inner velocity in row
+
+        for (size_t i = 0; i < mesh.nx - 1; ++i, ++ic, ++ie)
+            edge_term_Y<1>(
+                mesh, timemesh, phiup, phi, evx, ic, ic + 1, ie);
+    }
+}
+template <>
+void ThreadEdge_term_Y(size_t start, size_t end, const Mesh& mesh, CellVector<2>& phiup, const CellVector<2>& phi, const EdgeVector<2>& evx,
+    LocalCellVector<2>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t iy = start; iy < end; ++iy) {
+        size_t ic = iy * mesh.nx; // first index of left cell in row
+        size_t ie = iy * (mesh.nx + 1) + 1; // first index of inner velocity in row
+
+        for (size_t i = 0; i < mesh.nx - 1; ++i, ++ic, ++ie)
+            edge_term_Y<2>(
+                mesh, timemesh, phiup, phi, evx, ic, ic + 1, ie);
+    }
+}
+
+template <int DGdegree>
+void ThreadEdge_term_X(size_t start, size_t end, const Mesh& mesh, CellVector<DGdegree>& phiup, const CellVector<DGdegree>& phi,
+    const EdgeVector<DGdegree>& evy, LocalCellVector<DGdegree>& inversemasscell, const TimeMesh& timemesh);
+template <>
+void ThreadEdge_term_X(size_t start, size_t end, const Mesh& mesh, CellVector<0>& phiup, const CellVector<0>& phi, const EdgeVector<0>& evy,
+    LocalCellVector<0>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t ix = start; ix < end; ++ix) {
+        size_t ic = ix; // first index of left cell in column
+        size_t ie = ix + mesh.nx; // first index of inner velocity in column
+        for (size_t i = 0; i < mesh.ny - 1; ++i, ic += mesh.nx, ie += mesh.nx)
+            edge_term_X<0>(
+                mesh, timemesh, phiup, phi, evy, ic, ic + mesh.nx, ie);
+    }
+}
+template <>
+void ThreadEdge_term_X(size_t start, size_t end, const Mesh& mesh, CellVector<1>& phiup, const CellVector<1>& phi, const EdgeVector<1>& evy,
+    LocalCellVector<1>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t ix = start; ix < end; ++ix) {
+        size_t ic = ix; // first index of left cell in column
+        size_t ie = ix + mesh.nx; // first index of inner velocity in column
+        for (size_t i = 0; i < mesh.ny - 1; ++i, ic += mesh.nx, ie += mesh.nx)
+            edge_term_X<1>(
+                mesh, timemesh, phiup, phi, evy, ic, ic + mesh.nx, ie);
+    }
+}
+template <>
+void ThreadEdge_term_X(size_t start, size_t end, const Mesh& mesh, CellVector<2>& phiup, const CellVector<2>& phi, const EdgeVector<2>& evy,
+    LocalCellVector<2>& inversemasscell, const TimeMesh& timemesh)
+{
+
+    for (size_t ix = start; ix < end; ++ix) {
+        size_t ic = ix; // first index of left cell in column
+        size_t ie = ix + mesh.nx; // first index of inner velocity in column
+        for (size_t i = 0; i < mesh.ny - 1; ++i, ic += mesh.nx, ie += mesh.nx)
+            edge_term_X<2>(
+                mesh, timemesh, phiup, phi, evy, ic, ic + mesh.nx, ie);
+    }
+}
+
 //! Applies the linear transport operator 'div (v Psi)' in upwind formulation,
 //! scaled with inverse mass matrix and with the time step
 //! The result is written to phiup (which is set to zero at the beginning)
@@ -514,11 +645,89 @@ void transportoperator(const Mesh& mesh,
     const CellVector<DGdegree>& phi,
     CellVector<DGdegree>& phiup)
 {
+
+    GlobalTimer.start("--> InverseMatrix");
     phiup.zero();
 
     LocalCellVector<DGdegree> inversemasscell;
     inversemassmatrix(mesh, timemesh, inversemasscell);
 
+    GlobalTimer.stop("--> InverseMatrix");
+    /*
+    ThreadCellTerms<DGdegree>(0, mesh.ny, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(vx), std::ref(vy), std::ref(inversemasscell));
+    ThreadEdge_term_Y<DGdegree>(0, mesh.ny, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(evx),
+        std::ref(inversemasscell), std::ref(timemesh));
+    ThreadEdge_term_X<DGdegree>(0, mesh.nx, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(evy),
+        std::ref(inversemasscell), std::ref(timemesh));
+    */
+
+    GlobalTimer.start("-- -- --> cell term");
+
+    size_t num_threads = 4;
+
+    std::vector<std::thread> threads;
+    size_t start = 0;
+    size_t end = mesh.ny;
+    for (size_t i = 0; i < num_threads; i++) {
+        start = (mesh.ny / num_threads) * i;
+        end = (mesh.ny / num_threads) * (i + 1);
+        if (i == 0) {
+            start = 0;
+        }
+        if (i + 1 == num_threads) {
+            end = mesh.ny;
+        }
+        //std::cout << "start" << start << "end" << end << "size" << mesh.ny << std::endl;
+        threads.push_back(std::thread(ThreadCellTerms<DGdegree>, start, end, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(vx), std::ref(vy), std::ref(inversemasscell)));
+    }
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        threads[i].join();
+    }
+    GlobalTimer.stop("-- -- --> cell term");
+    GlobalTimer.start("-- -- --> edge terms");
+    std::vector<std::thread> Ythreads;
+
+    for (size_t i = 0; i < num_threads; i++) {
+        start = (mesh.ny / num_threads) * i;
+        end = (mesh.ny / num_threads) * (i + 1);
+        if (i == 0) {
+            start = 0;
+        }
+        if (i + 1 == num_threads) {
+            end = mesh.ny;
+        }
+        //std::cout << "start" << start << "end" << end << "size" << mesh.ny << std::endl;
+        Ythreads.push_back(std::thread(ThreadEdge_term_Y<DGdegree>, start, end, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(evx),
+            std::ref(inversemasscell), std::ref(timemesh)));
+    }
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        Ythreads[i].join();
+    }
+
+    std::vector<std::thread> Xthreads;
+
+    for (size_t i = 0; i < num_threads; i++) {
+        start = (mesh.nx / num_threads) * i;
+        end = (mesh.nx / num_threads) * (i + 1);
+        if (i == 0) {
+            start = 0;
+        }
+        if (i + 1 == num_threads) {
+            end = mesh.nx;
+        }
+        //std::cout << "start" << start << "end" << end << "size" << mesh.nx << std::endl;
+        Xthreads.push_back(std::thread(ThreadEdge_term_X<DGdegree>, start, end, std::ref(mesh), std::ref(phiup), std::ref(phi), std::ref(evy),
+            std::ref(inversemasscell), std::ref(timemesh)));
+    }
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        Xthreads[i].join();
+    }
+    GlobalTimer.stop("-- -- --> edge terms");
+
+    /*
     GlobalTimer.start("-- -- --> cell term");
     // Cell terms
 #pragma omp parallel for
@@ -551,7 +760,7 @@ void transportoperator(const Mesh& mesh,
                 mesh, timemesh, phiup, phi, evy, ic, ic + mesh.nx, ie);
     }
     GlobalTimer.stop("-- -- --> edge terms");
-
+   */
     // boundaries
     GlobalTimer.start("-- -- --> boundaries");
     // lower & upper
